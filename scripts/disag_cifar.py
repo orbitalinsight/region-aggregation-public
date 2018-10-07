@@ -43,6 +43,9 @@ ACTIVATIONS = {'sigmoid', 'softplus'}
 
 
 class CifarSequence(Sequence):
+    """
+    Sequence class to handle batch creation
+    """
 
     def __init__(self, X, regions, Y, batch_size):
         self.x = X
@@ -67,6 +70,7 @@ class CifarSequence(Sequence):
 
 
 def saveim(im, fname, cmap=None):
+    """ Helper function for saving images """
     if im.ndim == 3 and im.shape[2] == 3:
         plt.imsave(fname, im)
     else:
@@ -74,7 +78,7 @@ def saveim(im, fname, cmap=None):
 
 
 def save_train_examples(X_train, Y_train, regions_train, num_examples):
-    # save some examples
+    """ Save some training examples, including images, f_p, regions, and F_p"""
     r = RegionAccumulator(MAX_REGIONS)
     for i in range(num_examples):
         img_I = (X_train[i].transpose(1,2,0)+1.)/2.
@@ -92,10 +96,15 @@ def save_train_examples(X_train, Y_train, regions_train, num_examples):
         saveim(sum_image.squeeze(), join(RES_DIR, 'F_r_train{}.png'.format(i)), cmap=plt.cm.Greens)
 
 
-def create_random_voronoi(w, h, num_regions, rng):
-    # return int64 single channel image of regions
-    # with help from: https://www.learnopencv.com/delaunay-triangulation-and-voronoi-diagram-using-opencv-c-python/
-    assert w == h  # randomly sampling points under this assumption for now
+def create_random_voronoi(size, num_regions, rng):
+    """
+    Creates a random voronoi image of a certain width and height
+    by sampling num_region random points. Returns int64 single channel image.
+
+    Code adapted from:
+            https://www.learnopencv.com/delaunay-triangulation-and-voronoi-diagram-using-opencv-c-python/
+    """
+    w = h = size  # for this project, assume images are square
     rect = (0, 0, w, h)
     subdiv = cv2.Subdiv2D(rect)
     for rp in rng.randint(0, w, size=(num_regions, 2)):
@@ -114,6 +123,9 @@ def create_random_voronoi(w, h, num_regions, rng):
 
 
 class RegionAccumulator(Layer):
+    """
+    Layer that performs the region accumulation.
+    """
 
     def __init__(self, max_num_regions=MAX_REGIONS, **kwargs):
         self.max_num_regions = max_num_regions
@@ -123,6 +135,7 @@ class RegionAccumulator(Layer):
         super(RegionAccumulator, self).build(input_shape)
 
     def call(self, x):
+        # x has two inputs, the per-pixel input and the fixed regions
         bs = K.shape(x[0])[0]
         func = K.reshape(x[0],(bs,1,-1))
         region = K.one_hot(K.flatten(x[1]), self.max_num_regions)
@@ -144,6 +157,7 @@ def prep_cifar():
 
 
 def prep_y_sparse(X):
+    """ Creates target Y tensor that is sparse"""
     N,d,h,w = X.shape
     color_vecs = X.transpose(0,2,3,1).reshape(-1,3)
     n_bins = 16
@@ -177,6 +191,7 @@ def prep_y_sparse(X):
 
 
 def prep_y_real(X):
+    """ Creates target Y tensor that contains real values """
     N,d,h,w = X.shape
     num_centroids = 20
     seed = 0
@@ -191,6 +206,7 @@ def prep_y_real(X):
 
 
 def prep_y_step(X):
+    """ Creates target Y tensor that is a step function"""
     N,d,h,w = X.shape
     num_centroids = 20
     threshold = 0.4
@@ -205,6 +221,7 @@ def prep_y_step(X):
 
 
 def prep_y_simple(X):
+    """ Creates a simple target Y tensor, in this case, binary."""
     N,d,h,w = X.shape
     num_centroids = 15
     threshold = 0.2
@@ -222,7 +239,7 @@ def prep_regions_and_sums(Y, max_regions):
     N,d,h,w = Y.shape
     seed = 0
     rng = check_random_state(seed)
-    regions = np.stack([create_random_voronoi(w, h, max_regions, rng) for _ in range(N)], axis=0)
+    regions = np.stack([create_random_voronoi(w, max_regions, rng) for _ in range(N)], axis=0)
     regions = regions.reshape(N,1,h,w)
     # integrate yield functions over regions
     sums = []
