@@ -1,6 +1,6 @@
-# A Weakly Supervised Approach for Estimating Spatial Density Functions from High-Resolution Satellite Imagery
+# Region Accumulation for Synthetic Data Example using CIFAR
 
-## Synthetic Data Example using CIFAR
+Used in the paper `A Weakly Supervised Approach for Estimating Spatial Density Functions from High-Resolution Satellite Imagery`
 
 Usage: `python run_cifar.py` (use `-h` to see more options)
 
