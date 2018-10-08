@@ -1,3 +1,4 @@
+import argparse
 import cv2
 import json
 import numpy as np
@@ -5,11 +6,11 @@ import os
 
 import matplotlib.pyplot as plt
 from collections import defaultdict
-from itertools import product
 from os.path import exists, join
 from scipy.spatial.distance import cdist
 from sklearn.utils import check_random_state
 
+os.environ['KERAS_BACKEND'] = 'tensorflow'
 from keras.datasets import cifar10
 from keras.layers import Input, Conv2D, BatchNormalization, ActivityRegularization
 from keras.callbacks import (
@@ -22,36 +23,18 @@ from keras.models import Model, load_model
 from keras.optimizers import SGD, Adam
 from keras.utils import Sequence
 
-os.environ['KERAS_BACKEND'] = 'tensorflow'
-RES_DIR = './results'
-LOG_DIR = './logs'
-RES_JSON = join(RES_DIR, 'results.json')
-STEPS_PER_EPOCH = 1000
-MAX_ITERS = 120000
-DECAY_LR_ITERS = 40000
-DECAY_LR_EPOCHS = DECAY_LR_ITERS / STEPS_PER_EPOCH
-EPOCHS = MAX_ITERS / STEPS_PER_EPOCH
-Y_FUN = 'y_simple'
-#Y_FUN = 'y_real'
-#Y_FUN = 'y_step'
-#Y_FUN = 'y_sparse'
-MAX_REGIONS = 10
-NUM_VAL = 2500
-L1_NORM = 0.0001
-
-ACTIVATIONS = {'sigmoid', 'softplus'}
-
 
 class CifarSequence(Sequence):
     """
     Sequence class to handle batch creation
     """
 
-    def __init__(self, X, regions, Y, batch_size):
+    def __init__(self, X, regions, Y, batch_size, steps_per_epoch):
         self.x = X
         self.regions = regions
         self.y = Y
         self.batch_size = batch_size
+        self.steps_per_epoch = steps_per_epoch
         self.on_epoch_end()
 
     def __getitem__(self, index):
@@ -61,7 +44,7 @@ class CifarSequence(Sequence):
         return x, self.y[indexes, ...]
 
     def __len__(self):
-        return STEPS_PER_EPOCH
+        return self.steps_per_epoch
 
     def on_epoch_end(self):
         # 'Updates indexes after each epoch'
@@ -77,23 +60,23 @@ def saveim(im, fname, cmap=None):
         plt.imsave(fname, im, cmap=cmap)
 
 
-def save_train_examples(X_train, Y_train, regions_train, num_examples):
+def save_train_examples(X_train, Y_train, regions_train, num_examples, max_regions, res_dir):
     """ Save some training examples, including images, f_p, regions, and F_p"""
-    r = RegionAccumulator(MAX_REGIONS)
+    r = RegionAccumulator(max_regions)
     for i in range(num_examples):
         img_I = (X_train[i].transpose(1,2,0)+1.)/2.
-        saveim(img_I, join(RES_DIR, 'cifar_img_train{}.png'.format(i)), cmap=plt.cm.Greens)
+        saveim(img_I, join(res_dir, 'cifar_img_train{}.png'.format(i)), cmap=plt.cm.Greens)
         f_p = Y_train[i:i+1]
-        saveim(f_p.squeeze(), join(RES_DIR, 'f_p_train{}.png'.format(i)))
+        saveim(f_p.squeeze(), join(res_dir, 'f_p_train{}.png'.format(i)))
         region = regions_train[i:i+1]
-        saveim(region.squeeze(), join(RES_DIR, 'regions_train{}.png'.format(i)), cmap=plt.cm.Paired)
+        saveim(region.squeeze(), join(res_dir, 'regions_train{}.png'.format(i)), cmap=plt.cm.Paired)
         # use RegionAccumulator to show ground truth F(r)
         region_sums = K.eval(r([K.constant(f_p), K.constant(region, dtype=np.int64)]))
         sum_image = np.zeros_like(region, dtype=np.float32)
         for ind, r_sum in enumerate(region_sums.squeeze()):
             num_region = np.sum(region == ind)
             sum_image[region == ind] = r_sum / float(num_region + 1e-7)
-        saveim(sum_image.squeeze(), join(RES_DIR, 'F_r_train{}.png'.format(i)), cmap=plt.cm.Greens)
+        saveim(sum_image.squeeze(), join(res_dir, 'F_r_train{}.png'.format(i)), cmap=plt.cm.Greens)
 
 
 def create_random_voronoi(size, num_regions, rng):
@@ -127,7 +110,7 @@ class RegionAccumulator(Layer):
     Layer that performs the region accumulation.
     """
 
-    def __init__(self, max_num_regions=MAX_REGIONS, **kwargs):
+    def __init__(self, max_num_regions, **kwargs):
         self.max_num_regions = max_num_regions
         super(RegionAccumulator, self).__init__(**kwargs)
 
@@ -144,6 +127,9 @@ class RegionAccumulator(Layer):
 
     def compute_output_shape(self, input_shape):
         return (input_shape[0],self.max_num_regions)
+
+    def get_config(self):
+        return {'max_num_regions': self.max_num_regions}
 
 
 def prep_cifar():
@@ -250,27 +236,40 @@ def prep_regions_and_sums(Y, max_regions):
     return regions, sums
 
 
-def get_ex_name(disag, activation, act_norm, n_tr_examples):
+def get_ex_name(y_fun, disag, activation, act_norm, n_tr_examples, max_iters, max_regions):
     # params is dict
     ex_name = 'ex'
     ex_name += '_samples{}'.format(n_tr_examples)
-    if Y_FUN != 'y_sparse':
-        ex_name += '_{}'.format(Y_FUN)
+    if y_fun != 'y_sparse':
+        ex_name += '_{}'.format(y_fun)
     ex_name += '_disag' if disag else '_unif'
-    assert activation in ACTIVATIONS
     ex_name += '_{}'.format(activation)
-    ex_name += '_actL1Norm{}'.format(L1_NORM) if act_norm else ''
-    ex_name += '_e{}_r{}'.format(MAX_ITERS, MAX_REGIONS)
+    ex_name += '_actL1Norm' if act_norm else ''
+    ex_name += '_e{}_r{}'.format(max_iters, max_regions)
     return ex_name
 
 
-def train_experiment(X_train, regions_train, sums_train,
-                     disag, activation, act_norm, n_tr_examples):
+def train_experiment(X_train,
+                     regions_train,
+                     sums_train,
+                     train_dir,
+                     y_fun,
+                     disag,
+                     activation,
+                     act_norm,
+                     n_tr_examples,
+                     max_iters,
+                     max_regions,
+                     n_val,
+                     steps_per_epoch,
+                     decay_lr_iters):
+    epochs = max_iters / steps_per_epoch
+    decay_lr_epochs = decay_lr_iters / steps_per_epoch
     N,d,h,w = X_train.shape
     # VAL SPLIT
-    X_train, X_val = np.split(X_train, (N - NUM_VAL,))
-    regions_train, regions_val = np.split(regions_train, (N - NUM_VAL,))
-    sums_train, sums_val = np.split(sums_train, (N - NUM_VAL,))
+    X_train, X_val = np.split(X_train, (N - n_val,))
+    regions_train, regions_val = np.split(regions_train, (N - n_val,))
+    sums_train, sums_val = np.split(sums_train, (N - n_val,))
 
     N,d,h,w = X_train.shape
 
@@ -285,19 +284,18 @@ def train_experiment(X_train, regions_train, sums_train,
     regions_train_ex = regions_train[:n_tr_examples, ...]
     sums_train_ex = sums_train[:n_tr_examples, ...]
 
-    ex_name = get_ex_name(disag, activation, act_norm, n_tr_examples)
+    ex_name = get_ex_name(y_fun, disag, activation, act_norm, n_tr_examples,
+                          max_iters, max_regions)
     print 'Running experiment {}'.format(ex_name)
-    ex_dir = join(LOG_DIR, ex_name)
+    ex_dir = join(train_dir, ex_name)
     ex_model_path = join(ex_dir, 'model.keras')
     if exists(ex_model_path):
         return
 
-    print 'Running #{} epochs, dropping LR every {}'.format(EPOCHS, DECAY_LR_EPOCHS)
-
     def step_decay(epoch):
         initial_lrate = lr_init
         drop = 0.5
-        epochs_drop = DECAY_LR_EPOCHS
+        epochs_drop = decay_lr_epochs
         lrate = initial_lrate * np.power(drop, np.floor((1+epoch)/epochs_drop))
         return lrate
 
@@ -316,27 +314,28 @@ def train_experiment(X_train, regions_train, sums_train,
     out = BatchNormalization(axis=1,scale=False,name='agg/bn3')(out)
     Y_pred = Conv2D(1,(1,1),activation=activation,kernel_regularizer=reg,name='agg/output')(out)
     if act_norm:
-        print 'Adding activity regularization'
-        Y_pred = ActivityRegularization(L1_NORM)(Y_pred)
+        Y_pred = ActivityRegularization(0.0001)(Y_pred)
 
     if disag:
-        agg = RegionAccumulator(MAX_REGIONS,name='agg/accum')([Y_pred,region])
+        agg = RegionAccumulator(max_regions, name='agg/accum')([Y_pred,region])
         model_agg = Model(inputs=(im,region), outputs=agg)
         model_agg.compile(Adam(lr=lr_init, amsgrad=True), loss=loss, metrics=[loss])
-        generator = CifarSequence(X_train_ex, regions_train_ex, sums_train_ex, batch_size)
-        val_generator = CifarSequence(X_val, regions_val, sums_val, batch_size)
-        model_agg.fit_generator(generator=generator,  epochs=EPOCHS, verbose=True,
+        generator = CifarSequence(X_train_ex, regions_train_ex, sums_train_ex,
+                                  batch_size, steps_per_epoch)
+        val_generator = CifarSequence(X_val, regions_val, sums_val,
+                                      batch_size, steps_per_epoch)
+        model_agg.fit_generator(generator=generator, epochs=epochs, verbose=True,
                                 validation_data=val_generator,
                                 workers=1, use_multiprocessing=False, callbacks=callback_list)
     else:
         unif_region_sum = np.zeros(regions_train.shape)
-        for ix in range(MAX_REGIONS):
+        for ix in range(max_regions):
             region_cur = regions_train == ix
             region_cur_area = region_cur.sum(axis=(1,2,3))
             per_pixel_yield = sums_train[:,ix] / (1e-10 + region_cur_area)
             np.copyto(unif_region_sum,per_pixel_yield.reshape(-1,1,1,1), where=region_cur)
         unif_region_sum_val = np.zeros(regions_train.shape)
-        for ix in range(MAX_REGIONS):
+        for ix in range(max_regions):
             region_cur = regions_train == ix
             region_cur_area = region_cur.sum(axis=(1,2,3))
             per_pixel_yield = sums_train[:,ix] / (1e-10 + region_cur_area)
@@ -345,19 +344,34 @@ def train_experiment(X_train, regions_train, sums_train,
         model_unif = Model(inputs=im, outputs=Y_pred)
 
         model_unif.compile(Adam(lr=lr_init, amsgrad=True), loss=loss, metrics=[loss])
-        generator = CifarSequence(X_train_ex, regions_train_ex, unif_region_sum, batch_size)
-        val_generator = CifarSequence(X_val, regions_val, unif_region_sum_val, batch_size)
-        model_unif.fit_generator(generator=generator, epochs=EPOCHS, verbose=True,
+        generator = CifarSequence(X_train_ex, regions_train_ex, unif_region_sum,
+                                  batch_size, steps_per_epoch)
+        val_generator = CifarSequence(X_val, regions_val, unif_region_sum_val,
+                                      batch_size, steps_per_epoch)
+        model_unif.fit_generator(generator=generator, epochs=epochs, verbose=True,
                                  validation_data=val_generator,
                                  workers=1, use_multiprocessing=False, callbacks=callback_list)
 
 
-def evaluate_experiment(X_test, Y_test, regions_test, sums_test, num_viz_examples,
-                        disag, activation, act_norm, n_tr_examples):
-    r = RegionAccumulator(MAX_REGIONS)
+def evaluate_experiment(X_test,
+                        Y_test,
+                        regions_test,
+                        sums_test,
+                        train_dir,
+                        y_fun,
+                        result_dir,
+                        num_viz_examples,
+                        disag,
+                        activation,
+                        act_norm,
+                        n_tr_examples,
+                        max_iters,
+                        max_regions):
+    r = RegionAccumulator(max_regions)
     # collect experiment name, load model
-    ex_name = get_ex_name(disag, activation, act_norm, n_tr_examples)
-    ex_dir = join(LOG_DIR, ex_name)
+    ex_name = get_ex_name(y_fun, disag, activation, act_norm, n_tr_examples,
+                          max_iters, max_regions)
+    ex_dir = join(train_dir, ex_name)
     ex_model_path = join(ex_dir, 'model.keras')
     print 'Evaluating experiment {}'.format(ex_name)
     assert exists(ex_model_path), 'Unable to fine trained model: {}'.format(ex_model_path)
@@ -370,19 +384,19 @@ def evaluate_experiment(X_test, Y_test, regions_test, sums_test, num_viz_example
     _Y_pred = None  # only run predictions if needed
 
     for i in range(num_viz_examples):
-        i_path = join(RES_DIR, 'cifar_img_test{}.png'.format(i))
+        i_path = join(result_dir, 'cifar_img_test{}.png'.format(i))
         if not exists(i_path):
             img_I = (X_test[i].transpose(1,2,0)+1.)/2.
             saveim(img_I, i_path)
-        f_p_path = join(RES_DIR, 'f_p_{}_test{}.png'.format(Y_FUN, i))
+        f_p_path = join(result_dir, 'f_p_{}_test{}.png'.format(y_fun, i))
         if not exists(f_p_path):
             f_p = Y_test[i:i+1]
             saveim(f_p.squeeze(), f_p_path, cmap=plt.cm.Greens)
-        region_path = join(RES_DIR, 'regions_test{}.png'.format(i))
+        region_path = join(result_dir, 'regions_test{}.png'.format(i))
         if not exists(region_path):
             region = regions_test[i:i+1]
             saveim(region.squeeze(), region_path, cmap=plt.cm.Paired)
-        sum_image_path = join(RES_DIR, 'F_r_{}_test{}.png'.format(Y_FUN, i))
+        sum_image_path = join(result_dir, 'F_r_{}_test{}.png'.format(y_fun, i))
         if not exists(sum_image_path):
             f_p = Y_test[i:i+1]
             region = regions_test[i:i+1]
@@ -393,16 +407,17 @@ def evaluate_experiment(X_test, Y_test, regions_test, sums_test, num_viz_example
                 num_region = np.sum(region == ind)
                 sum_image[region == ind] = r_sum / float(num_region + 1e-7)
             saveim(sum_image.squeeze(), sum_image_path, cmap=plt.cm.Greens)
-        f_hat_p_path = join(RES_DIR, 'f_hat_p_test_{}_{}.png'.format(ex_name, i))
+        f_hat_p_path = join(result_dir, 'f_hat_p_test_{}_{}.png'.format(ex_name, i))
         if not exists(f_hat_p_path):
             if _Y_pred is None:
                 # get predictions for batch
                 _Y_pred = model.predict_on_batch(X_test[0:num_viz_examples,...])
             saveim(_Y_pred[i].squeeze(), f_hat_p_path, cmap=plt.cm.Greens)
 
-    # laod / save results
+    # load / save results
     try:
-        with open(RES_JSON) as f:
+        results_json = join(result_dir, 'results.json')
+        with open(results_json) as f:
             res_json = json.load(f)
     except IOError:
         res_json = {}
@@ -414,35 +429,76 @@ def evaluate_experiment(X_test, Y_test, regions_test, sums_test, num_viz_example
                              activation=activation,
                              act_norm=act_norm,
                              n_tr_examples=n_tr_examples)
-    with open(RES_JSON, 'w') as f:
+    with open(results_json, 'w') as f:
         json.dump(res_json, f)
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description='Run synthetic data CIFAR10 example')
+    parser.add_argument('--result_dir', type=str, default='./results',
+                        help='Directory for output results.')
+    parser.add_argument('--train_dir', type=str, default='./training',
+                        help='Directory for training outputs and logs.')
+    parser.add_argument('--steps_per_epoch', type=int, default=1000,
+                        help='Number of steps/iterations to complete an epoch.')
+    parser.add_argument('--max_iters', type=int, default=120000,
+                        help='Maximum number of iterations.')
+    parser.add_argument('--decay_iters', type=int, default=40000,
+                        help='Number of iterations after which to decay the '
+                        'learning rate')
+    parser.add_argument('--y_fun', type=str,
+                        choices=['y_simple', 'y_real', 'y_step', 'y_sparse'],
+                        default='y_simple',
+                        help='Target (Y) function to train')
+    parser.add_argument('--max_regions', type=int, default=10,
+                        help='Maximum number of regions to accumulate.')
+    parser.add_argument('--num_val_examples', type=int, default=2500,
+                        help='Number of examples to use as validation')
+    parser.add_argument('--pred_activation', type=str, choices=['sigmoid', 'softplus'],
+                        default='softplus',
+                        help='Activation to use after per-pixel prediction layer.')
+    parser.add_argument('--activation_reg', action='store_true',
+                        help='If used, will add a regularization penalty to predication layer')
+    parser.add_argument('--num_viz_examples', type=int, default=50,
+                        help='Number of output images to save')
+
+    args = parser.parse_args()
+
+    # set up directories
+    if not exists(args.result_dir):
+        os.makedirs(args.result_dir)
+    if not exists(args.train_dir):
+        os.makedirs(args.train_dir)
+
+    y_fun = args.y_fun
+
+    args = parser.parse_args()
     print 'Loading Data...'
     X, n_train = prep_cifar()
-    if Y_FUN == 'y_sparse':
+    if y_fun == 'y_sparse':
         if not exists('Ysparse.npy'):
             Y_sparse = prep_y_sparse(X)
             np.save('Ysparse.npy', Y_sparse)
         else:
             Y_sparse = np.load('Ysparse.npy')
         Y = Y_sparse
-    elif Y_FUN == 'y_real':
+    elif y_fun == 'y_real':
         if not exists('Yreal.npy'):
             Y_real = prep_y_real(X)
             np.save('Yreal.npy', Y_real)
         else:
             Y_real = np.load('Yreal.npy')
         Y = Y_real
-    elif Y_FUN == 'y_step':
+    elif y_fun == 'y_step':
         if not exists('Ystep.npy'):
             Y_step = prep_y_step(X)
             np.save('Ystep.npy', Y_step)
         else:
             Y_step = np.load('Ystep.npy')
         Y = Y_step
-    elif Y_FUN == 'y_simple':
+    elif y_fun == 'y_simple':
         if not exists('Ysimple.npy'):
             Y_simple = prep_y_simple(X)
             np.save('Ysimple.npy', Y_simple)
@@ -450,10 +506,10 @@ def main():
             Y_simple = np.load('Ysimple.npy')
         Y = Y_simple
 
-    regions_path = 'regions_{}.npy'.format(Y_FUN)
-    sums_path = 'sums_{}.npy'.format(Y_FUN)
+    regions_path = 'regions_{}.npy'.format(y_fun)
+    sums_path = 'sums_{}.npy'.format(y_fun)
     if not exists(regions_path) or not exists(sums_path):
-        regions, sums = prep_regions_and_sums(Y, MAX_REGIONS)
+        regions, sums = prep_regions_and_sums(Y, args.max_regions)
         np.save(regions_path, regions)
         np.save(sums_path, sums)
     else:
@@ -468,21 +524,39 @@ def main():
 
     del X, Y, regions, sums
 
-    print 'saving examples'
-    save_train_examples(X_train, Y_train, regions_train, num_examples=15)
+    save_train_examples(X_train, Y_train, regions_train,
+                        num_examples=15, max_regions=args.max_regions, res_dir=args.result_dir)
 
-    print 'training/evaluating...'
-    num_viz_examples = 50
-    activations = ['softplus']
-    act_norms = [False]
-    disags = [True, False]
-    n_tr_examples = [X_train.shape[0]-NUM_VAL]
-    for ac, an, d, num_ex in product(activations, act_norms, disags, n_tr_examples):
-        num_ex = int(num_ex)
-        train_experiment(X_train, regions_train, sums_train,
-                         disag=d, activation=ac, act_norm=an, n_tr_examples=num_ex)
-        evaluate_experiment(X_test, Y_test, regions_test, sums_test, num_viz_examples,
-                            disag=d, activation=ac, act_norm=an, n_tr_examples=num_ex)
+    num_train = int(X_train.shape[0]-args.num_val_examples)
+    for disag in [True, False]:
+        train_experiment(X_train=X_train,
+                         regions_train=regions_train,
+                         sums_train=sums_train,
+                         train_dir=args.train_dir,
+                         y_fun=y_fun,
+                         disag=disag,
+                         activation=args.pred_activation,
+                         act_norm=args.activation_reg,
+                         n_tr_examples=num_train,
+                         max_iters=args.max_iters,
+                         max_regions=args.max_regions,
+                         n_val=args.num_val_examples,
+                         steps_per_epoch=args.steps_per_epoch,
+                         decay_lr_iters=args.decay_iters)
+        evaluate_experiment(X_test=X_test,
+                            Y_test=Y_test,
+                            regions_test=regions_test,
+                            sums_test=sums_test,
+                            train_dir=args.train_dir,
+                            y_fun=y_fun,
+                            result_dir=args.result_dir,
+                            num_viz_examples=args.num_viz_examples,
+                            disag=disag,
+                            activation=args.pred_activation,
+                            act_norm=args.activation_reg,
+                            n_tr_examples=num_train,
+                            max_iters=args.max_iters,
+                            max_regions=args.max_regions)
 
 
 if __name__ == '__main__':

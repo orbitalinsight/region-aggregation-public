@@ -4,6 +4,8 @@
 
 Usage: `python run_cifar.py` (use `-h` to see more options)
 
+Reuires keras with tensorflow backend.
+
 Code for running synthetic data example, training different methods using the `RegionAccumulator` layer.
 
 Used to create both data and sample images in the paper.
