@@ -47,7 +47,7 @@ class CifarSequence(Sequence):
         return self.steps_per_epoch
 
     def on_epoch_end(self):
-        # 'Updates indexes after each epoch'
+        # Updates indexes after each epoch
         self.indexes = np.arange(self.x.shape[0])
         np.random.shuffle(self.indexes)
 
@@ -70,7 +70,7 @@ def save_train_examples(X_train, Y_train, regions_train, num_examples, max_regio
         saveim(f_p.squeeze(), join(res_dir, 'f_p_train{}.png'.format(i)))
         region = regions_train[i:i+1]
         saveim(region.squeeze(), join(res_dir, 'regions_train{}.png'.format(i)), cmap=plt.cm.Paired)
-        # use RegionAccumulator to show ground truth F(r)
+        # Use RegionAccumulator to show ground truth F(r)
         region_sums = K.eval(r([K.constant(f_p), K.constant(region, dtype=np.int64)]))
         sum_image = np.zeros_like(region, dtype=np.float32)
         for ind, r_sum in enumerate(region_sums.squeeze()):
@@ -87,7 +87,7 @@ def create_random_voronoi(size, num_regions, rng):
     Code adapted from:
             https://www.learnopencv.com/delaunay-triangulation-and-voronoi-diagram-using-opencv-c-python/
     """
-    w = h = size  # for this project, assume images are square
+    w = h = size  # For this project, assume images are square
     rect = (0, 0, w, h)
     subdiv = cv2.Subdiv2D(rect)
     for rp in rng.randint(0, w, size=(num_regions, 2)):
@@ -156,12 +156,12 @@ def prep_y_sparse(X):
     for color, image_ind in zip(disc_color_vecs, color_image_inds):
         c_to_ims[tuple(color)].add(image_ind)
         c_sums[tuple(color)] += 1
-    # create avg times in images
+    # Create avg times in images
     c_avg_in_images = {c: c_sums[c] / float(len(c_to_ims[c])) for c in c_sums.keys()}
-    # collect colors/inds in far right/bottom range
+    # Collect colors/inds in far right/bottom range
     xmin = 29000
     ymax = 10
-    # create x/y points which correspond to # of images and avg times in iamge
+    # Create x/y points which correspond to # of images and avg times in iamge
     xs = []
     ys = []
     for c in c_sums.keys():
@@ -227,7 +227,7 @@ def prep_regions_and_sums(Y, max_regions):
     rng = check_random_state(seed)
     regions = np.stack([create_random_voronoi(w, max_regions, rng) for _ in range(N)], axis=0)
     regions = regions.reshape(N,1,h,w)
-    # integrate yield functions over regions
+    # Integrate yield functions over regions
     sums = []
     for region in range(max_regions):
         tmp = Y * (regions == region).astype(np.float32)
@@ -237,7 +237,6 @@ def prep_regions_and_sums(Y, max_regions):
 
 
 def get_ex_name(y_fun, disag, activation, act_norm, n_tr_examples, max_iters, max_regions):
-    # params is dict
     ex_name = 'ex'
     ex_name += '_samples{}'.format(n_tr_examples)
     if y_fun != 'y_sparse':
@@ -273,13 +272,13 @@ def train_experiment(X_train,
 
     N,d,h,w = X_train.shape
 
-    # PARAMS
+    # Params
     lr_init = 0.01
     reg = l2(.0001)
     loss = 'mae'
     batch_size = 64
 
-    # subset of n_tr_examples
+    # Subset of n_tr_examples
     X_train_ex = X_train[:n_tr_examples, ...]
     regions_train_ex = regions_train[:n_tr_examples, ...]
     sums_train_ex = sums_train[:n_tr_examples, ...]
@@ -368,7 +367,7 @@ def evaluate_experiment(X_test,
                         max_iters,
                         max_regions):
     r = RegionAccumulator(max_regions)
-    # collect experiment name, load model
+    # Collect experiment name, load model
     ex_name = get_ex_name(y_fun, disag, activation, act_norm, n_tr_examples,
                           max_iters, max_regions)
     ex_dir = join(train_dir, ex_name)
@@ -379,9 +378,9 @@ def evaluate_experiment(X_test,
 
     if disag:
         model = Model(inputs=model.inputs[0],outputs=model.get_layer('agg/output').output)
-        model.compile(SGD(lr=.0), 'mae', metrics=['mae'])  # only necessary to run model.evaluate()
+        model.compile(SGD(lr=.0), 'mae', metrics=['mae'])  # Only necessary to run model.evaluate()
 
-    _Y_pred = None  # only run predictions if needed
+    _Y_pred = None  # Only run predictions if needed
 
     for i in range(num_viz_examples):
         i_path = join(result_dir, 'cifar_img_test{}.png'.format(i))
@@ -400,7 +399,7 @@ def evaluate_experiment(X_test,
         if not exists(sum_image_path):
             f_p = Y_test[i:i+1]
             region = regions_test[i:i+1]
-            # use RegionAccumulator to show ground truth F(r)
+            # Use RegionAccumulator to show ground truth F(r)
             region_sums = K.eval(r([K.constant(f_p), K.constant(region, dtype=np.int64)]))
             sum_image = np.zeros_like(region, dtype=np.float32)
             for ind, r_sum in enumerate(region_sums.squeeze()):
@@ -410,11 +409,11 @@ def evaluate_experiment(X_test,
         f_hat_p_path = join(result_dir, 'f_hat_p_test_{}_{}.png'.format(ex_name, i))
         if not exists(f_hat_p_path):
             if _Y_pred is None:
-                # get predictions for batch
+                # Get predictions for batch
                 _Y_pred = model.predict_on_batch(X_test[0:num_viz_examples,...])
             saveim(_Y_pred[i].squeeze(), f_hat_p_path, cmap=plt.cm.Greens)
 
-    # load / save results
+    # Load / save results
     try:
         results_json = join(result_dir, 'results.json')
         with open(results_json) as f:
@@ -466,7 +465,7 @@ def main():
 
     args = parser.parse_args()
 
-    # set up directories
+    # Set up directories
     if not exists(args.result_dir):
         os.makedirs(args.result_dir)
     if not exists(args.train_dir):
@@ -516,7 +515,7 @@ def main():
         assert exists(regions_path) and exists(sums_path)
         regions = np.load(regions_path)
         sums = np.load(sums_path)
-    # create splits
+    # Create splits
     X_train, X_test = np.split(X, (n_train,))
     Y_train, Y_test = np.split(Y, (n_train,))
     regions_train, regions_test = np.split(regions, (n_train,))
